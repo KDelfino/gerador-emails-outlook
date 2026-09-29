@@ -34,6 +34,8 @@ class EmailSenderApp(tk.Tk):
         self.grupo_em_edicao = tk.StringVar()
         
         self.assunto_var = tk.StringVar()
+        self.cc_var = tk.StringVar(value="")
+        self.bcc_var = tk.StringVar(value="")
         self.tipo_acao = tk.StringVar(value="rascunho")
         
         self.colunas_disponiveis = []
@@ -45,6 +47,12 @@ class EmailSenderApp(tk.Tk):
         self.grupos_selecionados_vars = {}
         self.modelos_por_grupo = {}
         self.grupo_anterior_edicao = None
+
+        self.usar_anexo_dinamico = tk.BooleanVar(value=False)
+        self.pasta_anexos_dinamicos = tk.StringVar(value="")
+        self.coluna_busca_anexo = tk.StringVar(value="")
+        self.padrao_busca_anexo = tk.StringVar(value="#nome#")
+        self.pular_se_sem_anexo_dinamico = tk.BooleanVar(value=True)
 
         self.ultimo_foco = None
         self.cancel_event = threading.Event()
@@ -388,12 +396,25 @@ class EmailSenderApp(tk.Tk):
         )
 
         row_assunto = tk.Frame(self.frame_secao_modelo, bg=self.COLOR_CARD)
-        row_assunto.pack(fill="x", pady=4)
+        row_assunto.pack(fill="x", pady=3)
 
         ttk.Label(row_assunto, text="Assunto:").pack(side="left", padx=5)
         self.entry_assunto = ttk.Entry(row_assunto, textvariable=self.assunto_var, font=("Segoe UI", 10))
         self.entry_assunto.pack(side="left", fill="x", expand=True, padx=5)
         self.entry_assunto.bind("<FocusIn>", lambda e: self._definir_foco(self.entry_assunto))
+
+        row_copia = tk.Frame(self.frame_secao_modelo, bg=self.COLOR_CARD)
+        row_copia.pack(fill="x", pady=3)
+
+        ttk.Label(row_copia, text="Cc (Com Copia):").pack(side="left", padx=5)
+        self.entry_cc = ttk.Entry(row_copia, textvariable=self.cc_var, font=("Segoe UI", 9), width=28)
+        self.entry_cc.pack(side="left", padx=5)
+        self.entry_cc.bind("<FocusIn>", lambda e: self._definir_foco(self.entry_cc))
+
+        ttk.Label(row_copia, text="Cco (Copia Oculta):").pack(side="left", padx=(10, 5))
+        self.entry_bcc = ttk.Entry(row_copia, textvariable=self.bcc_var, font=("Segoe UI", 9), width=28)
+        self.entry_bcc.pack(side="left", fill="x", expand=True, padx=5)
+        self.entry_bcc.bind("<FocusIn>", lambda e: self._definir_foco(self.entry_bcc))
 
         row_corpo_lbl = tk.Frame(self.frame_secao_modelo, bg=self.COLOR_CARD)
         row_corpo_lbl.pack(fill="x", pady=(6, 2))
@@ -429,8 +450,12 @@ class EmailSenderApp(tk.Tk):
         frame = ttk.LabelFrame(parent, text=" 4. Anexos do E-mail ")
         frame.pack(fill="x", pady=6)
 
+        lbl_fixos = tk.Label(frame, text="Arquivos Fixos (Gerais ou do Grupo):", font=("Segoe UI", 9, "bold"), 
+                             bg=self.COLOR_CARD, fg=self.COLOR_TEXT_MAIN)
+        lbl_fixos.pack(anchor="w", padx=5, pady=(2, 2))
+
         botoes_anexos = tk.Frame(frame, bg=self.COLOR_CARD)
-        botoes_anexos.pack(fill="x", pady=4)
+        botoes_anexos.pack(fill="x", pady=2)
 
         btn_add = ttk.Button(botoes_anexos, text="Adicionar Arquivo(s)...", command=self._adicionar_anexo)
         btn_add.pack(side="left", padx=5)
@@ -456,7 +481,62 @@ class EmailSenderApp(tk.Tk):
             highlightbackground=self.COLOR_INPUT_BORDER,
             highlightcolor=self.COLOR_ACCENT
         )
-        self.listbox_anexos.pack(fill="x", expand=True, padx=5, pady=4)
+        self.listbox_anexos.pack(fill="x", expand=True, padx=5, pady=(2, 6))
+
+        ttk.Separator(frame, orient="horizontal").pack(fill="x", padx=5, pady=6)
+
+        cb_dyn = ttk.Checkbutton(
+            frame, 
+            text="Anexar arquivo individual por destinatario a partir de uma pasta (Certificados, etc.)", 
+            variable=self.usar_anexo_dinamico,
+            command=self._ao_alternar_anexo_dinamico
+        )
+        cb_dyn.pack(anchor="w", padx=5, pady=4)
+
+        self.frame_anexo_dinamico = tk.Frame(frame, bg="#161821", bd=1, relief="solid", 
+                                             highlightthickness=1, highlightbackground=self.COLOR_CARD_BORDER, padx=10, pady=8)
+
+        row_dyn1 = tk.Frame(self.frame_anexo_dinamico, bg="#161821")
+        row_dyn1.pack(fill="x", pady=3)
+
+        ttk.Label(row_dyn1, text="Pasta dos Arquivos:").pack(side="left", padx=5)
+        self.entry_pasta_dyn = ttk.Entry(row_dyn1, textvariable=self.pasta_anexos_dinamicos, width=45)
+        self.entry_pasta_dyn.pack(side="left", fill="x", expand=True, padx=5)
+
+        btn_sel_pasta = ttk.Button(row_dyn1, text="Selecionar Pasta...", command=self._selecionar_pasta_anexos, style="Primary.TButton")
+        btn_sel_pasta.pack(side="left", padx=3)
+
+        row_dyn2 = tk.Frame(self.frame_anexo_dinamico, bg="#161821")
+        row_dyn2.pack(fill="x", pady=4)
+
+        ttk.Label(row_dyn2, text="Coluna com Nome/Chave:").pack(side="left", padx=5)
+        self.combo_coluna_busca_anexo = ttk.Combobox(row_dyn2, textvariable=self.coluna_busca_anexo, state="readonly", width=18)
+        self.combo_coluna_busca_anexo.pack(side="left", padx=5)
+        self.combo_coluna_busca_anexo.bind("<<ComboboxSelected>>", lambda e: self._ao_mudar_coluna_busca_anexo())
+
+        ttk.Label(row_dyn2, text="Padrao do Nome:").pack(side="left", padx=(10, 5))
+        self.entry_padrao_anexo = ttk.Entry(row_dyn2, textvariable=self.padrao_busca_anexo, width=22)
+        self.entry_padrao_anexo.pack(side="left", padx=5)
+
+        lbl_hint_dyn = tk.Label(row_dyn2, text="(Ex: #nome# localiza 'NOME_certificado.pdf', 'NOME.pdf', etc.)",
+                                font=("Segoe UI", 8), bg="#161821", fg=self.COLOR_TEXT_MUTED)
+        lbl_hint_dyn.pack(side="left", padx=5)
+
+        row_dyn3 = tk.Frame(self.frame_anexo_dinamico, bg="#161821")
+        row_dyn3.pack(fill="x", pady=(4, 2))
+
+        cb_skip = ttk.Checkbutton(
+            row_dyn3,
+            text="Pular destinatario se o arquivo nao for encontrado na pasta",
+            variable=self.pular_se_sem_anexo_dinamico
+        )
+        cb_skip.pack(side="left", padx=5)
+
+        btn_verificar_dyn = ttk.Button(row_dyn3, text="Verificar Arquivos na Pasta", command=self._verificar_arquivos_dinamicos, style="Small.TButton")
+        btn_verificar_dyn.pack(side="left", padx=(15, 5))
+
+        self.lbl_status_dyn = tk.Label(self.frame_anexo_dinamico, text="", font=("Segoe UI", 9, "bold"), bg="#161821", fg="#93C5FD")
+        self.lbl_status_dyn.pack(anchor="w", padx=5, pady=(4, 0))
 
     def _criar_secao_acoes(self, parent):
         frame = ttk.LabelFrame(parent, text=" 5. Execucao e Status ")
@@ -563,6 +643,8 @@ class EmailSenderApp(tk.Tk):
 
         self.frame_painel_grupos.pack_forget()
         self.lbl_info_modelo_grupo.pack_forget()
+        self.combo_coluna_busca_anexo['values'] = []
+        self.coluna_busca_anexo.set("")
         self._atualizar_botoes_tags()
 
         self.lbl_status_dados.config(text="Nenhuma planilha carregada.", fg=self.COLOR_TEXT_MUTED, bg="#13151D")
@@ -659,6 +741,22 @@ class EmailSenderApp(tk.Tk):
             if self.coluna_condicao.get() not in opcoes_condicao:
                 self.coluna_condicao.set("[Nenhum - Modelo unico para todos]")
 
+            self.combo_coluna_busca_anexo['values'] = colunas
+            if colunas:
+                if self.coluna_busca_anexo.get() not in colunas:
+                    col_nome = ""
+                    for c in colunas:
+                        c_low = c.lower()
+                        if any(k in c_low for k in ['nome', 'name', 'usuario', 'destinatario', 'pessoa', 'aluno']):
+                            col_nome = c
+                            break
+                    if col_nome:
+                        self.coluna_busca_anexo.set(col_nome)
+                        self.padrao_busca_anexo.set(f"#{col_nome}#")
+                    else:
+                        self.coluna_busca_anexo.set(colunas[0])
+                        self.padrao_busca_anexo.set(f"#{colunas[0]}#")
+
             self._atualizar_painel_condicao()
             self._atualizar_botoes_tags()
             self._atualizar_contagem_destinatarios()
@@ -745,6 +843,8 @@ class EmailSenderApp(tk.Tk):
         if self.modo_condicao.get() == "por_grupo" and self.grupo_anterior_edicao:
             self.modelos_por_grupo[self.grupo_anterior_edicao] = {
                 'subject': self.assunto_var.get(),
+                'cc': self.cc_var.get().strip(),
+                'bcc': self.bcc_var.get().strip(),
                 'body': self.txt_corpo.get("1.0", tk.END).strip(),
                 'attachments': list(self.lista_anexos)
             }
@@ -764,12 +864,16 @@ class EmailSenderApp(tk.Tk):
         if grp in self.modelos_por_grupo:
             dados = self.modelos_por_grupo[grp]
             self.assunto_var.set(dados.get('subject', ''))
+            self.cc_var.set(dados.get('cc', ''))
+            self.bcc_var.set(dados.get('bcc', ''))
             self.txt_corpo.delete("1.0", tk.END)
             self.txt_corpo.insert("1.0", dados.get('body', ''))
             self.lista_anexos = list(dados.get('attachments', []))
         else:
             self.modelos_por_grupo[grp] = {
                 'subject': self.assunto_var.get(),
+                'cc': self.cc_var.get().strip(),
+                'bcc': self.bcc_var.get().strip(),
                 'body': self.txt_corpo.get("1.0", tk.END).strip(),
                 'attachments': list(self.lista_anexos)
             }
@@ -778,12 +882,16 @@ class EmailSenderApp(tk.Tk):
 
     def _copiar_modelo_atual_para_todos(self):
         assunto = self.assunto_var.get()
+        cc = self.cc_var.get().strip()
+        bcc = self.bcc_var.get().strip()
         corpo = self.txt_corpo.get("1.0", tk.END).strip()
         anexos = list(self.lista_anexos)
         
         for grp in self.grupos_disponiveis:
             self.modelos_por_grupo[grp] = {
                 'subject': assunto,
+                'cc': cc,
+                'bcc': bcc,
                 'body': corpo,
                 'attachments': list(anexos)
             }
@@ -916,6 +1024,55 @@ class EmailSenderApp(tk.Tk):
         self._atualizar_listbox_anexos()
         self._salvar_modelo_grupo_atual()
 
+    def _ao_alternar_anexo_dinamico(self):
+        if self.usar_anexo_dinamico.get():
+            self.frame_anexo_dinamico.pack(fill="x", padx=5, pady=(4, 4))
+        else:
+            self.frame_anexo_dinamico.pack_forget()
+
+    def _selecionar_pasta_anexos(self):
+        pasta = filedialog.askdirectory(title="Selecionar Pasta dos Certificados / Anexos Individuais")
+        if pasta:
+            self.pasta_anexos_dinamicos.set(pasta)
+            self._verificar_arquivos_dinamicos()
+
+    def _ao_mudar_coluna_busca_anexo(self):
+        col = self.coluna_busca_anexo.get()
+        if col:
+            self.padrao_busca_anexo.set(f"#{col}#")
+
+    def _verificar_arquivos_dinamicos(self):
+        pasta = self.pasta_anexos_dinamicos.get().strip()
+        if not pasta or not os.path.exists(pasta):
+            messagebox.showwarning("Aviso", "Por favor, selecione uma pasta valida para os arquivos.")
+            return
+
+        recs = self._obter_registros_filtrados()
+        if not recs:
+            messagebox.showwarning("Aviso", "Nenhum registro carregado da planilha para verificar.")
+            return
+
+        col = self.coluna_busca_anexo.get().strip()
+        padrao = self.padrao_busca_anexo.get().strip()
+
+        resultado = email_engine.verify_dynamic_attachments(pasta, recs, column_name=col, pattern_template=padrao)
+
+        total = resultado['total']
+        found = resultado['found']
+        missing = resultado['missing']
+
+        if missing == 0:
+            msg = f"Sucesso! Todos os {found} destinatarios possuem arquivo correspondente na pasta."
+            self.lbl_status_dyn.config(text=msg, fg="#4ADE80")
+            messagebox.showinfo("Verificacao Concluida", msg)
+        else:
+            faltantes_str = "\n- ".join(str(x) for x in resultado['missing_list'][:10])
+            if len(resultado['missing_list']) > 10:
+                faltantes_str += f"\n... e mais {len(resultado['missing_list']) - 10} registros."
+            msg = f"{found} de {total} arquivos encontrados. {missing} destinatarios NAO possuem arquivo na pasta:\n\n- {faltantes_str}"
+            self.lbl_status_dyn.config(text=f"{found} de {total} arquivos encontrados ({missing} sem arquivo)", fg="#F87171")
+            messagebox.showwarning("Verificacao de Arquivos", msg)
+
     def _atualizar_listbox_anexos(self):
         self.listbox_anexos.delete(0, tk.END)
         for arq in self.lista_anexos:
@@ -947,15 +1104,19 @@ class EmailSenderApp(tk.Tk):
                     break
 
         assunto_modelo = self.assunto_var.get()
+        cc_modelo = self.cc_var.get().strip()
+        bcc_modelo = self.bcc_var.get().strip()
         corpo_modelo = self.txt_corpo.get("1.0", tk.END).strip()
         anexos_modelo = list(self.lista_anexos)
 
         assunto_renderizado = email_engine.render_template(assunto_modelo, registro_exemplo)
+        cc_renderizado = email_engine.render_template(cc_modelo, registro_exemplo) if cc_modelo else ""
+        bcc_renderizado = email_engine.render_template(bcc_modelo, registro_exemplo) if bcc_modelo else ""
         corpo_renderizado = email_engine.render_template(corpo_modelo, registro_exemplo)
 
         janela = tk.Toplevel(self)
         janela.title("Pre-visualizacao do E-mail")
-        janela.geometry("680x540")
+        janela.geometry("680x590")
         janela.configure(bg=self.COLOR_BG)
 
         card_preview = tk.Frame(janela, bg=self.COLOR_CARD, bd=1, relief="solid", 
@@ -970,6 +1131,12 @@ class EmailSenderApp(tk.Tk):
         col_email = self.coluna_email.get()
         destinatario = registro_exemplo.get(col_email, 'E-mail nao encontrado')
         tk.Label(card_preview, text=f"Para: {destinatario}", font=("Segoe UI", 9), bg=self.COLOR_CARD, fg=self.COLOR_TEXT_MUTED).pack(anchor="w")
+
+        if cc_renderizado:
+            tk.Label(card_preview, text=f"Cc: {cc_renderizado}", font=("Segoe UI", 9), bg=self.COLOR_CARD, fg=self.COLOR_TEXT_MUTED).pack(anchor="w")
+
+        if bcc_renderizado:
+            tk.Label(card_preview, text=f"Cco: {bcc_renderizado}", font=("Segoe UI", 9), bg=self.COLOR_CARD, fg=self.COLOR_TEXT_MUTED).pack(anchor="w")
 
         tk.Label(card_preview, text=f"Assunto: {assunto_renderizado}", font=("Segoe UI", 10, "bold"), bg=self.COLOR_CARD, fg="#93C5FD").pack(anchor="w", pady=4)
 
@@ -991,8 +1158,23 @@ class EmailSenderApp(tk.Tk):
         txt.insert("1.0", corpo_renderizado)
         txt.config(state="disabled")
 
+        anexos_info_partes = []
         if anexos_modelo:
-            lbl_anexos = tk.Label(card_preview, text=f"Anexos ({len(anexos_modelo)}): " + ", ".join(os.path.basename(a) for a in anexos_modelo), 
+            anexos_info_partes.append("Fixos: " + ", ".join(os.path.basename(a) for a in anexos_modelo))
+        
+        if self.usar_anexo_dinamico.get():
+            pasta_dyn = self.pasta_anexos_dinamicos.get().strip()
+            if pasta_dyn and os.path.exists(pasta_dyn):
+                col_b = self.coluna_busca_anexo.get().strip()
+                padr_b = self.padrao_busca_anexo.get().strip()
+                dyn_match = email_engine.find_matching_attachment(pasta_dyn, registro_exemplo, col_b, padr_b)
+                if dyn_match:
+                    anexos_info_partes.append(f"Individual (Pasta): {os.path.basename(dyn_match)}")
+                else:
+                    anexos_info_partes.append("(Individual: Nenhum arquivo correspondente encontrado na pasta)")
+
+        if anexos_info_partes:
+            lbl_anexos = tk.Label(card_preview, text="Anexos: " + " | ".join(anexos_info_partes), 
                                   font=("Segoe UI", 8, "italic"), bg=self.COLOR_CARD, fg=self.COLOR_TEXT_MUTED)
             lbl_anexos.pack(anchor="w", pady=5)
 
@@ -1029,6 +1211,8 @@ class EmailSenderApp(tk.Tk):
         eh_por_grupo = (self.modo_condicao.get() == "por_grupo" and col_cond and not col_cond.startswith("[Nenhum"))
 
         assunto_padrao = self.assunto_var.get().strip()
+        cc_padrao = self.cc_var.get().strip()
+        bcc_padrao = self.bcc_var.get().strip()
         corpo_padrao = self.txt_corpo.get("1.0", tk.END).strip()
 
         if not eh_por_grupo:
@@ -1047,6 +1231,19 @@ class EmailSenderApp(tk.Tk):
                 if not sub or not bod:
                     messagebox.showerror("Erro", f"O modelo do grupo '{grp}' possui assunto ou corpo vazio. Por favor, preencha o modelo do grupo.")
                     return
+
+        pasta_dyn = None
+        col_dyn = None
+        padrao_dyn = None
+        skip_dyn = False
+        if self.usar_anexo_dinamico.get():
+            pasta_dyn = self.pasta_anexos_dinamicos.get().strip()
+            if not pasta_dyn or not os.path.exists(pasta_dyn):
+                messagebox.showerror("Erro", "Voce ativou o anexo individual por pasta, mas o caminho informado nao existe ou nao foi selecionado.")
+                return
+            col_dyn = self.coluna_busca_anexo.get().strip()
+            padrao_dyn = self.padrao_busca_anexo.get().strip()
+            skip_dyn = self.pular_se_sem_anexo_dinamico.get()
 
         is_draft = (self.tipo_acao.get() == "rascunho")
 
@@ -1078,12 +1275,12 @@ class EmailSenderApp(tk.Tk):
 
         thread = threading.Thread(
             target=self._executar_em_background,
-            args=(registros_a_processar, col_email, assunto_padrao, corpo_padrao, self.lista_anexos, is_draft, group_column, group_templates),
+            args=(registros_a_processar, col_email, assunto_padrao, corpo_padrao, self.lista_anexos, is_draft, group_column, group_templates, pasta_dyn, col_dyn, padrao_dyn, skip_dyn, cc_padrao, bcc_padrao),
             daemon=True
         )
         thread.start()
 
-    def _executar_em_background(self, records, col_email, assunto, corpo, anexos, is_draft, group_column, group_templates):
+    def _executar_em_background(self, records, col_email, assunto, corpo, anexos, is_draft, group_column, group_templates, dynamic_folder, dynamic_column, dynamic_pattern, skip_if_missing_dynamic_file, cc_template, bcc_template):
         def callback(current, total, status, msg, item):
             self.after(0, self._atualizar_progresso, current, total, status, msg)
 
@@ -1097,7 +1294,13 @@ class EmailSenderApp(tk.Tk):
             progress_callback=callback,
             cancel_event=self.cancel_event,
             group_column=group_column,
-            group_templates=group_templates
+            group_templates=group_templates,
+            dynamic_folder=dynamic_folder,
+            dynamic_column=dynamic_column,
+            dynamic_pattern=dynamic_pattern,
+            skip_if_missing_dynamic_file=skip_if_missing_dynamic_file,
+            cc_template=cc_template,
+            bcc_template=bcc_template
         )
 
         self.after(0, self._finalizar_processamento, res, is_draft)

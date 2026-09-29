@@ -2,6 +2,7 @@ import os
 import re
 import csv
 import openpyxl
+import unicodedata
 import pythoncom
 import win32com.client
 
@@ -239,9 +240,103 @@ def text_to_html(plain_text):
 
     return full_html
 
+def normalize_text(text):
+    if not text:
+        return ""
+    text_norm = unicodedata.normalize('NFKD', str(text)).encode('ASCII', 'ignore').decode('ASCII')
+    text_clean = re.sub(r'[_\-\.\s]+', ' ', text_norm).strip().lower()
+    return text_clean
+
+def find_matching_attachment(folder_path, record_dict, column_name=None, pattern_template=None, file_list_cache=None):
+    if not folder_path or not os.path.exists(folder_path):
+        return None
+
+    if file_list_cache is not None:
+        files = file_list_cache
+    else:
+        try:
+            files = os.listdir(folder_path)
+        except Exception:
+            return None
+
+    if pattern_template and ('#' in pattern_template or '{' in pattern_template):
+        target_raw = render_template(pattern_template, record_dict)
+    elif column_name and column_name in record_dict:
+        target_raw = str(record_dict.get(column_name, '')).strip()
+    else:
+        target_raw = ""
+
+    if not target_raw:
+        return None
+
+    target_norm = normalize_text(target_raw)
+    if not target_norm:
+        return None
+
+    for fname in files:
+        fpath = os.path.join(folder_path, fname)
+        if not os.path.isfile(fpath):
+            continue
+        stem, _ = os.path.splitext(fname)
+        stem_norm = normalize_text(stem)
+        if stem_norm == target_norm:
+            return fpath
+
+    for fname in files:
+        fpath = os.path.join(folder_path, fname)
+        if not os.path.isfile(fpath):
+            continue
+        stem, _ = os.path.splitext(fname)
+        stem_norm = normalize_text(stem)
+        if stem_norm.startswith(target_norm):
+            return fpath
+
+    for fname in files:
+        fpath = os.path.join(folder_path, fname)
+        if not os.path.isfile(fpath):
+            continue
+        stem, _ = os.path.splitext(fname)
+        stem_norm = normalize_text(stem)
+        if target_norm in stem_norm:
+            return fpath
+
+    return None
+
+def verify_dynamic_attachments(folder_path, records, column_name=None, pattern_template=None):
+    if not folder_path or not os.path.exists(folder_path) or not records:
+        return {'total': len(records) if records else 0, 'found': 0, 'missing': len(records) if records else 0, 'missing_list': []}
+
+    try:
+        files = os.listdir(folder_path)
+    except Exception:
+        files = []
+
+    found = 0
+    missing = 0
+    missing_list = []
+
+    for r in records:
+        match = find_matching_attachment(folder_path, r, column_name, pattern_template, file_list_cache=files)
+        key_val = r.get(column_name, '') if column_name else str(list(r.values())[0] if r else '')
+        if match:
+            found += 1
+        else:
+            missing += 1
+            missing_list.append(key_val)
+
+    return {
+        'total': len(records),
+        'found': found,
+        'missing': missing,
+        'missing_list': missing_list
+    }
+
 def process_emails(records, email_column, subject_template, body_template, 
                    attachments=None, is_draft=True, progress_callback=None, cancel_event=None,
-                   group_column=None, group_templates=None):
+                   group_column=None, group_templates=None,
+                   dynamic_folder=None, dynamic_column=None, dynamic_pattern=None,
+                   skip_if_missing_dynamic_file=False,
+                   cc_template=None, bcc_template=None):
     if not records:
         if progress_callback:
             progress_callback(0, 0, 'error', 'Nenhum registro para processar.', None)
@@ -252,6 +347,13 @@ def process_emails(records, email_column, subject_template, body_template,
     success = 0
     errors = 0
     skipped = 0
+
+    dyn_files_cache = None
+    if dynamic_folder and os.path.exists(dynamic_folder):
+        try:
+            dyn_files_cache = os.listdir(dynamic_folder)
+        except Exception:
+            dyn_files_cache = []
 
     pythoncom.CoInitialize()
     try:
@@ -275,6 +377,8 @@ def process_emails(records, email_column, subject_template, body_template,
             cur_subject = subject_template
             cur_body = body_template
             cur_attachments = list(attachments)
+            cur_cc = cc_template or ""
+            cur_bcc = bcc_template or ""
 
             if group_column and group_templates:
                 group_val = str(item.get(group_column, '')).strip()
@@ -292,6 +396,25 @@ def process_emails(records, email_column, subject_template, body_template,
                         cur_body = tpl['body']
                     if 'attachments' in tpl:
                         cur_attachments = list(tpl['attachments'])
+                    if 'cc' in tpl:
+                        cur_cc = tpl['cc']
+                    if 'bcc' in tpl:
+                        cur_bcc = tpl['bcc']
+
+            if dynamic_folder and os.path.exists(dynamic_folder):
+                dyn_file = find_matching_attachment(
+                    dynamic_folder, item, dynamic_column, dynamic_pattern, file_list_cache=dyn_files_cache
+                )
+                if dyn_file:
+                    cur_attachments.append(dyn_file)
+                else:
+                    if skip_if_missing_dynamic_file:
+                        skipped += 1
+                        key_info = item.get(dynamic_column or '', '')
+                        if progress_callback:
+                            progress_callback(idx, total, 'warning', 
+                                              f"Linha {idx}: Arquivo individual nao encontrado na pasta para '{key_info}'. Registro pulado.", item)
+                        continue
 
             try:
                 subject = render_template(cur_subject, item)
@@ -302,6 +425,16 @@ def process_emails(records, email_column, subject_template, body_template,
                 mail.To = recipient_email
                 mail.Subject = subject
                 mail.HTMLBody = html_body
+
+                if cur_cc:
+                    rendered_cc = render_template(cur_cc, item).strip()
+                    if rendered_cc:
+                        mail.CC = rendered_cc
+
+                if cur_bcc:
+                    rendered_bcc = render_template(cur_bcc, item).strip()
+                    if rendered_bcc:
+                        mail.BCC = rendered_bcc
 
                 for att in cur_attachments:
                     if os.path.exists(att):
@@ -316,8 +449,10 @@ def process_emails(records, email_column, subject_template, body_template,
 
                 success += 1
                 if progress_callback:
+                    att_names = [os.path.basename(a) for a in cur_attachments]
+                    att_str = f" (Anexos: {', '.join(att_names)})" if att_names else ""
                     progress_callback(idx, total, 'success', 
-                                      f"[{idx}/{total}] {action_name} para {recipient_email}", item)
+                                      f"[{idx}/{total}] {action_name} para {recipient_email}{att_str}", item)
 
             except Exception as e:
                 errors += 1
